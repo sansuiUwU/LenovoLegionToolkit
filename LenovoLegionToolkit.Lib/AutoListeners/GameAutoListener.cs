@@ -24,10 +24,28 @@ public class GameAutoListener : AbstractAutoListener<GameAutoListener.ChangedEve
             if (x is null) return false;
             if (y is null) return false;
             if (x.GetType() != y.GetType()) return false;
-            return x.Id == y.Id;
+
+            var xId = TryGetId(x);
+            var yId = TryGetId(y);
+            // if either process object was already released we cannot prove equality
+            if (xId == int.MinValue || yId == int.MinValue) return false;
+            return xId == yId;
         }
 
-        public int GetHashCode(Process obj) => obj.Id;
+        public int GetHashCode(Process obj)
+        {
+            // Process.Id throws InvalidOperationException once the underlying process object
+            // has been released - which can happen while this comparer runs from a
+            // Process.Exited callback. Fall back to identity so the lookup cannot throw.
+            var id = TryGetId(obj);
+            return id != int.MinValue ? id : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+        }
+
+        private static int TryGetId(Process process)
+        {
+            try { return process.Id; }
+            catch (InvalidOperationException) { return int.MinValue; }
+        }
     }
 
     private static readonly object Lock = new();
@@ -226,7 +244,16 @@ public class GameAutoListener : AbstractAutoListener<GameAutoListener.ChangedEve
                 return;
 
             if (Log.Instance.IsTraceEnabled)
-                Log.Instance.Trace($"Process {process.Id} exited.");
+            {
+                try
+                {
+                    Log.Instance.Trace($"Process {process.Id} exited.");
+                }
+                catch (InvalidOperationException)
+                {
+                    Log.Instance.Trace("A watched process exited (details unavailable).");
+                }
+            }
 
             var staleProcesses = _processCache.RemoveWhere(p =>
             {
